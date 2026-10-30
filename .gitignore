@@ -1,4 +1,4 @@
-# Python
+# ── Python ───────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -9,40 +9,40 @@ dist/
 *.egg-info/
 .eggs/
 
-# Virtual environments
+# ── Virtualenv ───────────────────────────────────────────────
 .venv/
 venv/
+env/
 ENV/
 
-# Testing and linting caches
+# ── Secrets ──────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ── Database ─────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# ── Testing / tooling ────────────────────────────────────────
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
-.coverage.*
 htmlcov/
 coverage.xml
 
-# Local database
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-
-# Secrets — never commit these
-.env
-.env.local
-.env.*.local
-
-# Vercel
-.vercel/
-
-# Editor and OS
+# ── Editors / OS ─────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 .DS_Store
 Thumbs.db
 
-# Screenshots are hosted, not committed (see README)
-screenshots/
+# ── Vercel ───────────────────────────────────────────────────
+.vercel/
