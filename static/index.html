@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Mehfil — an AI character platform where you can read the prompt.">
+<title>Mehfil — characters with a visible prompt</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌙</text></svg>">
+</head>
+<body>
+
+<!-- ── Sign in ─────────────────────────────────────────────────────────── -->
+<section id="view-auth" class="view auth-view">
+  <div class="auth-card">
+    <div class="brand">
+      <span class="brand-mark">م</span>
+      <div>
+        <h1>Mehfil</h1>
+        <p class="brand-sub">Characters with a visible prompt</p>
+      </div>
+    </div>
+
+    <div class="auth-tabs" role="tablist">
+      <button class="auth-tab is-active" data-mode="login" role="tab" aria-selected="true">Sign in</button>
+      <button class="auth-tab" data-mode="register" role="tab" aria-selected="false">Create account</button>
+    </div>
+
+    <form id="auth-form" class="auth-form" novalidate>
+      <label class="field" id="name-field" hidden>
+        <span>Display name</span>
+        <input type="text" name="display_name" autocomplete="name" maxlength="80" placeholder="What should characters call you?">
+      </label>
+      <label class="field">
+        <span>Email</span>
+        <input type="email" name="email" autocomplete="email" required placeholder="you@example.com">
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input type="password" name="password" autocomplete="current-password" required minlength="8" placeholder="At least 8 characters">
+      </label>
+      <p class="form-error" id="auth-error" role="alert" hidden></p>
+      <button type="submit" class="btn btn-primary btn-block" id="auth-submit">Sign in</button>
+    </form>
+
+    <p class="auth-note">
+      No model connected? The app still works — it shows you the exact prompt
+      it would send, and says plainly that no model answered.
+    </p>
+  </div>
+</section>
+
+<!-- ── App ─────────────────────────────────────────────────────────────── -->
+<section id="view-app" class="view app-view" hidden>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <div class="brand brand-sm">
+        <span class="brand-mark">م</span>
+        <h1>Mehfil</h1>
+      </div>
+      <button class="icon-btn" id="sidebar-close" aria-label="Close menu">✕</button>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn btn-primary btn-block" id="new-character">+ New character</button>
+      <button class="btn btn-ghost btn-block" id="import-card">Import card</button>
+    </div>
+
+    <div class="sidebar-section">
+      <h2 class="sidebar-title">Characters</h2>
+      <div id="character-list" class="character-list"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <h2 class="sidebar-title">Your chats</h2>
+      <div id="chat-list" class="chat-list"></div>
+    </div>
+
+    <div class="sidebar-foot">
+      <div class="backend-pill" id="backend-pill">
+        <span class="dot"></span>
+        <span id="backend-label">checking…</span>
+      </div>
+      <button class="link-btn" id="sign-out">Sign out</button>
+    </div>
+  </aside>
+
+  <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="sidebar-open" aria-label="Open menu">☰</button>
+      <div class="topbar-title">
+        <h2 id="chat-title">Pick a character</h2>
+        <p id="chat-subtitle">or create one of your own</p>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost btn-sm" id="inspect-prompt" disabled>Inspect prompt</button>
+      </div>
+    </header>
+
+    <div class="messages" id="messages">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-mark">م</div>
+        <h3>Nothing open yet</h3>
+        <p>Choose a character on the left, or make a new one. Every reply shows which backend produced it — and if none did, it says so.</p>
+      </div>
+    </div>
+
+    <form class="composer" id="composer" hidden>
+      <textarea id="composer-input" rows="1" placeholder="Say something…" maxlength="8000" aria-label="Message"></textarea>
+      <button type="submit" class="btn btn-primary" id="send-btn">Send</button>
+    </form>
+  </main>
+</section>
+
+<!-- ── Prompt inspector ────────────────────────────────────────────────── -->
+<div class="modal" id="prompt-modal" hidden>
+  <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+    <div class="modal-head">
+      <div>
+        <h3 id="prompt-title">The prompt</h3>
+        <p class="modal-sub" id="prompt-sub">Exactly what would be sent.</p>
+      </div>
+      <button class="icon-btn" id="prompt-close" aria-label="Close">✕</button>
+    </div>
+    <div class="prompt-body" id="prompt-body"></div>
+  </div>
+</div>
+
+<!-- ── Character editor ────────────────────────────────────────────────── -->
+<div class="modal" id="editor-modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+    <div class="modal-head">
+      <h3 id="editor-title">New character</h3>
+      <button class="icon-btn" id="editor-close" aria-label="Close">✕</button>
+    </div>
+    <form id="editor-form" class="editor-form">
+      <label class="field">
+        <span>Name</span>
+        <input type="text" name="name" required maxlength="120" placeholder="e.g. Zainab from Lyari">
+      </label>
+      <label class="field">
+        <span>Description</span>
+        <textarea name="description" rows="4" maxlength="20000" placeholder="Who are they? Where are they from? What do they care about?"></textarea>
+      </label>
+      <label class="field">
+        <span>Personality</span>
+        <textarea name="personality" rows="2" maxlength="20000" placeholder="Dry humour, impatient, kind underneath"></textarea>
+      </label>
+      <label class="field">
+        <span>Scenario</span>
+        <textarea name="scenario" rows="2" maxlength="20000" placeholder="A late-night chai stall in Karachi"></textarea>
+      </label>
+      <label class="field">
+        <span>First message</span>
+        <textarea name="first_mes" rows="3" maxlength="20000" placeholder="What do they say when the chat opens?"></textarea>
+      </label>
+      <label class="field">
+        <span>Example dialogue</span>
+        <textarea name="mes_example" rows="3" maxlength="20000" placeholder="{{user}}: ...&#10;{{char}}: ..."></textarea>
+      </label>
+      <label class="field field-inline">
+        <input type="checkbox" name="is_public">
+        <span>Make this character public</span>
+      </label>
+      <p class="form-error" id="editor-error" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="editor-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save character</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Import card ─────────────────────────────────────────────────────── -->
+<div class="modal" id="import-modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="import-title">
+    <div class="modal-head">
+      <h3 id="import-title">Import a character card</h3>
+      <button class="icon-btn" id="import-close" aria-label="Close">✕</button>
+    </div>
+    <p class="modal-sub">Paste a Character Card V2 (or v1) JSON. Cards from SillyTavern and card sites work as-is.</p>
+    <form id="import-form" class="editor-form">
+      <label class="field">
+        <span>Card JSON</span>
+        <textarea name="card" rows="10" required placeholder='{"spec":"chara_card_v2","data":{"name":"…"}}'></textarea>
+      </label>
+      <p class="form-error" id="import-error" role="alert" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="import-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Import</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
