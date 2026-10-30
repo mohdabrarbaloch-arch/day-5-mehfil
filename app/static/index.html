@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Mehfil — characters that stay in character</title>
+<meta name="description" content="Build AI characters whose voice you can measure. Compile the prompt, inspect every block, and score drift on every reply." />
+<meta name="theme-color" content="#0d0b14" />
+<link rel="stylesheet" href="/static/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎭</text></svg>" />
+</head>
+<body>
+
+<!-- ─────────────────────────────── auth ─────────────────────────────── -->
+<section id="view-auth" class="view active">
+  <div class="auth-wrap">
+    <div class="auth-brand">
+      <div class="mark">م</div>
+      <h1>Mehfil</h1>
+      <p class="tagline">Characters that stay in character — and tell you when they don't.</p>
+    </div>
+
+    <div class="card auth-card">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-auth-tab="login" role="tab">Sign in</button>
+        <button class="tab" data-auth-tab="register" role="tab">Create account</button>
+      </div>
+
+      <form id="form-login" class="auth-form">
+        <label>Email<input type="email" name="email" autocomplete="email" required placeholder="you@example.com" /></label>
+        <label>Password<input type="password" name="password" autocomplete="current-password" required placeholder="••••••••" /></label>
+        <button type="submit" class="btn primary full">Sign in</button>
+      </form>
+
+      <form id="form-register" class="auth-form hidden">
+        <label>Email<input type="email" name="email" autocomplete="email" required placeholder="you@example.com" /></label>
+        <label>Display name<input type="text" name="display_name" autocomplete="nickname" placeholder="Abrar" maxlength="80" /></label>
+        <label>Password<input type="password" name="password" autocomplete="new-password" required minlength="8" placeholder="At least 8 characters" /></label>
+        <button type="submit" class="btn primary full">Create account</button>
+      </form>
+
+      <p id="auth-error" class="error hidden"></p>
+    </div>
+
+    <p class="auth-foot">No model connected? Mehfil still compiles and inspects your prompt — and says so plainly instead of inventing a reply.</p>
+  </div>
+</section>
+
+<!-- ─────────────────────────────── app ─────────────────────────────── -->
+<section id="view-app" class="view">
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="mark small">م</span>
+      <strong>Mehfil</strong>
+    </div>
+    <div class="topbar-right">
+      <span id="backend-pill" class="pill" title="Active generation backend">backend: —</span>
+      <button id="btn-logout" class="btn ghost small">Sign out</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>Characters</h2>
+        <button id="btn-new-char" class="btn primary small">+ New</button>
+      </div>
+      <div class="sidebar-actions">
+        <button id="btn-import" class="btn ghost small full">Import card (V2 JSON)</button>
+        <input type="file" id="file-import" accept="application/json,.json" hidden />
+      </div>
+      <ul id="char-list" class="char-list"></ul>
+      <p id="char-empty" class="muted small pad">No characters yet. Create one, or import a Character Card V2.</p>
+    </aside>
+
+    <!-- main pane -->
+    <div class="pane">
+      <!-- empty state -->
+      <div id="pane-empty" class="pane-empty">
+        <div class="empty-art">🎭</div>
+        <h2>Pick a character, or build one</h2>
+        <p class="muted">Every character compiles to an inspectable prompt. Every reply gets a voice-fidelity score.</p>
+        <button id="btn-new-char-2" class="btn primary">Create your first character</button>
+      </div>
+
+      <!-- chat -->
+      <div id="pane-chat" class="pane-chat hidden">
+        <div class="chat-head">
+          <div>
+            <h2 id="chat-name">—</h2>
+            <p id="chat-sub" class="muted small">—</p>
+          </div>
+          <div class="chat-head-actions">
+            <button id="btn-inspect" class="btn ghost small">Inspect prompt</button>
+            <button id="btn-edit-char" class="btn ghost small">Edit</button>
+          </div>
+        </div>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="form-send" class="composer">
+          <textarea id="input-message" rows="1" placeholder="Say something…" maxlength="8000"></textarea>
+          <button type="submit" id="btn-send" class="btn primary">Send</button>
+        </form>
+        <p id="chat-hint" class="muted tiny pad"></p>
+      </div>
+
+      <!-- editor -->
+      <div id="pane-editor" class="pane-editor hidden">
+        <div class="editor-head">
+          <h2 id="editor-title">New character</h2>
+          <div class="editor-actions">
+            <button id="btn-cancel-edit" class="btn ghost small">Cancel</button>
+            <button id="btn-save-char" class="btn primary small">Save</button>
+          </div>
+        </div>
+
+        <form id="form-char" class="editor-form">
+          <div class="grid-2">
+            <label>Name *<input name="name" required maxlength="80" placeholder="Zainab" /></label>
+            <label>Tags<input name="tags" placeholder="sarcastic, karachi, urdu" /></label>
+          </div>
+
+          <label>Description
+            <textarea name="description" rows="4" placeholder="Who they are, what they do, what they want."></textarea>
+          </label>
+
+          <label>Personality
+            <textarea name="personality" rows="3" placeholder="Terse. Sarcastic. Deflects with jokes when uncomfortable."></textarea>
+          </label>
+
+          <label>Scenario
+            <textarea name="scenario" rows="2" placeholder="A late-night chai stall in Karachi. It's raining."></textarea>
+          </label>
+
+          <label>First message
+            <textarea name="first_mes" rows="2" placeholder="*looks up from the kettle* You again."></textarea>
+          </label>
+
+          <label>Example dialogue <span class="hint">— this is what the fidelity score is measured against</span>
+            <textarea name="mes_example" rows="6" placeholder="{{user}}: Are you okay?&#10;{{char}}: Fine. Why wouldn't I be.&#10;{{user}}: You're crying.&#10;{{char}}: It's the rain. Obviously."></textarea>
+          </label>
+
+          <details class="advanced">
+            <summary>Advanced — system prompt, post-history, greetings</summary>
+            <label>System prompt <span class="hint">(leave blank for the default)</span>
+              <textarea name="system_prompt" rows="3"></textarea>
+            </label>
+            <label>Post-history instructions <span class="hint">(read last, before the user's turn)</span>
+              <textarea name="post_history_instructions" rows="2"></textarea>
+            </label>
+            <label>Alternate greetings <span class="hint">(one per line)</span>
+              <textarea name="alternate_greetings" rows="2"></textarea>
+            </label>
+            <label class="check"><input type="checkbox" name="is_public" /> Make this character public</label>
+          </details>
+
+          <div class="lore-block">
+            <div class="lore-head">
+              <h3>Lorebook <span class="hint">— injected only when the conversation touches it</span></h3>
+              <button type="button" id="btn-add-lore" class="btn ghost small">+ Entry</button>
+            </div>
+            <div id="lore-list"></div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </main>
+</section>
+
+<!-- ─────────────────────────────── inspector modal ─────────────────────────────── -->
+<div id="modal-inspect" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Prompt inspector</h2>
+      <button id="btn-close-inspect" class="btn ghost small">Close</button>
+    </div>
+    <p class="muted small">Exactly what the model receives, block by block. Nothing is hidden.</p>
+    <div id="inspect-body" class="inspect-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
