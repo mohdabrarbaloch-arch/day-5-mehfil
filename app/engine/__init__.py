@@ -1,34 +1,48 @@
-"""Mehfil's prompt engine.
+"""Mehfil engine — character cards, prompt compilation, generation, fidelity.
 
-Everything in this package is pure: no database, no network, no FastAPI.
-That is deliberate -- it means the whole engine is testable without a
-server, and the same code runs in the API and in the CLI.
+The engine is deliberately free of FastAPI, SQLAlchemy and any I/O beyond the
+model backend. That means it can be tested in isolation, reused in a CLI, and
+reasoned about without a database.
 """
 
-from .cards import CardError, CharacterCard, parse_card, validate_card
-from .compiler import CompiledPrompt, PromptBlock, compile_prompt, substitute
-from .context import Eviction, FitReport, fit_prompt
-from .lorebook import LoreEntry, LoreMatch, parse_entries, render, scan
-from .tokenizer import count_messages, count_tokens, estimate
+from .cards import Card, CardError, LoreEntryData, parse_card, validate_card
+from .compiler import (
+    DEFAULT_CONTEXT_BUDGET,
+    DEFAULT_MAX_REPLY,
+    Block,
+    FitReport,
+    PromptBundle,
+    build,
+)
+from .fidelity import FidelityResult, StyleCard, extract_style, score
+from .generate import BackendError, Generation, active_backend, generate, stream
+from .lorebook import LoreResult, scan
+from .tokenizer import estimate_messages, estimate_tokens, truncate_to_budget
 
 __all__ = [
+    "Card",
     "CardError",
-    "CharacterCard",
-    "CompiledPrompt",
-    "Eviction",
-    "FitReport",
-    "LoreEntry",
-    "LoreMatch",
-    "PromptBlock",
-    "compile_prompt",
-    "count_messages",
-    "count_tokens",
-    "estimate",
-    "fit_prompt",
+    "LoreEntryData",
     "parse_card",
-    "parse_entries",
-    "render",
-    "scan",
-    "substitute",
     "validate_card",
+    "Block",
+    "FitReport",
+    "PromptBundle",
+    "build",
+    "DEFAULT_CONTEXT_BUDGET",
+    "DEFAULT_MAX_REPLY",
+    "StyleCard",
+    "FidelityResult",
+    "extract_style",
+    "score",
+    "Generation",
+    "BackendError",
+    "active_backend",
+    "generate",
+    "stream",
+    "LoreResult",
+    "scan",
+    "estimate_tokens",
+    "estimate_messages",
+    "truncate_to_budget",
 ]

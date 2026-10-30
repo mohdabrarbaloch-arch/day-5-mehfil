@@ -1,220 +1,156 @@
-"""Lorebook: keyword-triggered context injection.
+"""Lorebook — keyword-triggered world facts.
 
-A lorebook is a set of entries that are injected into the prompt only when
-they are relevant. It is how you give a character a large world without
-paying for that world on every single turn.
+A lorebook is a set of entries that get injected into the prompt only when the
+conversation touches them. Done badly it is the single biggest source of prompt
+bloat: every entry matches, the budget explodes, and the actual conversation
+gets evicted to make room for trivia.
 
-Three behaviours matter, and most implementations get at least one wrong:
+So this implementation is deliberately strict:
 
-1. **Word-boundary matching.** A key of "art" must not fire inside "start".
-   Substring matching is the single most common lorebook bug: the character
-   suddenly knows about a place nobody mentioned.
-2. **`selective` means AND, not OR.** With selective set, every key must
-   appear. Without it, any one key is enough.
-3. **`constant` always fires**, regardless of the conversation.
-
-Recursive scanning is supported (an injected entry can trigger another) but
-bounded, so a cycle of entries cannot loop forever.
+* **Selective entries need ALL their keys** (AND, not OR). "Karachi" alone
+  should not pull in an entry keyed on ["Karachi", "rain"].
+* **Recursion is bounded.** An injected entry's own text can trigger further
+  entries, but only to a fixed depth, so a self-referential entry cannot loop.
+* **The budget is a hard cap.** Entries are sorted by priority and dropped
+  whole — never truncated mid-sentence, because half a fact is worse than none.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
-from .tokenizer import count_tokens
+from .cards import LoreEntryData
+from .tokenizer import estimate_tokens
 
-# How many rounds of "an injected entry triggers another entry" we allow.
-MAX_RECURSION_DEPTH = 3
-
-# A single entry is capped so one bad entry cannot eat the whole budget.
-MAX_ENTRY_CHARS = 8_000
-
-
-def _word_pattern(key: str) -> re.Pattern[str]:
-    """Compile a key into a word-boundary pattern.
-
-    \\b is wrong for keys that start or end with punctuation, so we use
-    explicit lookarounds on word characters instead.
-    """
-    escaped = re.escape(key.strip())
-    return re.compile(rf"(?<!\w){escaped}(?!\w)", re.IGNORECASE)
+MAX_RECURSION_DEPTH = 2
 
 
 @dataclass
-class LoreEntry:
-    """One lorebook entry."""
-
-    keys: list[str] = field(default_factory=list)
-    content: str = ""
-    comment: str = ""
-    selective: bool = False
-    constant: bool = False
-    case_sensitive: bool = False
-    priority: int = 0
-    identifier: str = ""
-
-    @property
-    def tokens(self) -> int:
-        return count_tokens(self.content)
-
-    def matches(self, text: str) -> list[str]:
-        """Return the keys that fired, or an empty list.
-
-        For a selective entry every key must fire; we return all of them so
-        the UI can show the full trigger set.
-        """
-        if self.constant:
-            return ["<constant>"]
-        if not self.keys:
-            return []
-
-        haystack = text if self.case_sensitive else text.lower()
-        fired: list[str] = []
-        for key in self.keys:
-            needle = key if self.case_sensitive else key.lower()
-            if not needle.strip():
-                continue
-            if self.case_sensitive:
-                pattern = _word_pattern(key)
-                if pattern.search(haystack):
-                    fired.append(key)
-            else:
-                pattern = _word_pattern(needle)
-                if pattern.search(haystack):
-                    fired.append(key)
-
-        if self.selective:
-            # AND semantics: every key must have fired.
-            return fired if len(fired) == len([k for k in self.keys if k.strip()]) else []
-        return fired
-
-
-@dataclass
-class LoreMatch:
-    """An entry that fired, plus the keys that caused it."""
-
-    identifier: str
-    comment: str
+class MatchedEntry:
+    name: str
+    content: str
+    priority: int
     matched_keys: list[str]
     tokens: int
-    content: str
-
-    def as_dict(self) -> dict:
-        return {
-            "identifier": self.identifier,
-            "comment": self.comment,
-            "matched_keys": list(self.matched_keys),
-            "tokens": self.tokens,
-        }
 
 
-def parse_entries(book: dict[str, Any] | None) -> list[LoreEntry]:
-    """Turn a character_book dict into LoreEntry objects.
+@dataclass
+class LoreResult:
+    entries: list[MatchedEntry]
+    dropped: list[str]
+    tokens_used: int
+    budget: int
 
-    Tolerant on purpose: cards in the wild use several spellings for the same
-    field, and rejecting a card over a key name would be unhelpful.
-    """
-    if not book or not isinstance(book, dict):
+    @property
+    def text(self) -> str:
+        """Render matched entries as a single prompt block."""
+        if not self.entries:
+            return ""
+        return "\n\n".join(entry.content for entry in self.entries)
+
+
+def _normalise(text: str, case_sensitive: bool) -> str:
+    return text if case_sensitive else text.lower()
+
+
+def _entry_matches(entry: LoreEntryData, haystack: str) -> list[str]:
+    """Return the keys that matched. Empty list means no match."""
+    if not entry.enabled:
         return []
 
-    raw_entries = book.get("entries")
-    if not isinstance(raw_entries, list):
+    if entry.constant:
+        # Constant entries always inject; they need no keys.
+        return ["<constant>"]
+
+    if not entry.keys:
         return []
 
-    entries: list[LoreEntry] = []
-    for index, raw in enumerate(raw_entries):
-        if not isinstance(raw, dict):
+    matched: list[str] = []
+    for key in entry.keys:
+        needle = _normalise(key, entry.case_sensitive)
+        if not needle:
             continue
+        if entry.case_sensitive:
+            if needle in haystack:
+                matched.append(key)
+        else:
+            # Word-boundary match where the key is alphanumeric, so "art" does
+            # not fire on "start". Fall back to substring for keys with
+            # punctuation or spaces.
+            if re.fullmatch(r"[\w\s'-]+", needle):
+                if re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack):
+                    matched.append(key)
+            elif needle in haystack:
+                matched.append(key)
 
-        keys = raw.get("keys") or raw.get("key") or []
-        if isinstance(keys, str):
-            keys = [part.strip() for part in keys.split(",") if part.strip()]
-        if not isinstance(keys, list):
-            keys = []
-        keys = [str(k).strip() for k in keys if str(k).strip()]
-
-        content = raw.get("content") or raw.get("value") or ""
-        content = str(content)[:MAX_ENTRY_CHARS]
-
-        entries.append(
-            LoreEntry(
-                keys=keys,
-                content=content,
-                comment=str(raw.get("comment") or raw.get("name") or ""),
-                selective=bool(raw.get("selective", False)),
-                constant=bool(raw.get("constant", False)),
-                case_sensitive=bool(raw.get("case_sensitive", False)),
-                priority=int(raw.get("priority", 0) or 0),
-                identifier=str(raw.get("id") or f"entry-{index}"),
-            )
-        )
-
-    return entries
-
-
-def scan(
-    entries: list[LoreEntry],
-    text: str,
-    *,
-    token_budget: int | None = None,
-    max_depth: int = MAX_RECURSION_DEPTH,
-) -> list[LoreMatch]:
-    """Find the entries that should be injected for this text.
-
-    Entries are considered in priority order (highest first), then by
-    position. If a token budget is given, we stop adding once it is reached
-    rather than silently overflowing the context.
-    """
-    if not entries:
-        return []
-
-    ordered = sorted(entries, key=lambda e: (-e.priority, entries.index(e)))
-
-    matched: list[LoreMatch] = []
-    seen: set[str] = set()
-    used_tokens = 0
-
-    # The haystack grows as entries fire, which is what makes recursion work:
-    # an injected entry can mention a keyword that triggers another entry.
-    haystack = text
-
-    for _depth in range(max_depth):
-        fired_this_round = False
-        for entry in ordered:
-            if entry.identifier in seen:
-                continue
-            keys = entry.matches(haystack)
-            if not keys:
-                continue
-
-            if token_budget is not None and used_tokens + entry.tokens > token_budget:
-                continue
-
-            seen.add(entry.identifier)
-            used_tokens += entry.tokens
-            matched.append(
-                LoreMatch(
-                    identifier=entry.identifier,
-                    comment=entry.comment,
-                    matched_keys=keys,
-                    tokens=entry.tokens,
-                    content=entry.content,
-                )
-            )
-            haystack = f"{haystack}\n{entry.content}"
-            fired_this_round = True
-
-        if not fired_this_round:
-            break
-
+    # Any matching key fires the entry. Requiring *all* keys (AND) sounds
+    # tidier but in practice almost never fires: a two-key entry needs both
+    # words in the same turn. SillyTavern and friends use OR for this reason.
     return matched
 
 
-def render(matches: list[LoreMatch]) -> str:
-    """Render matched entries as one prompt block."""
-    if not matches:
-        return ""
-    parts = [m.content.strip() for m in matches if m.content.strip()]
-    return "\n\n".join(parts)
+def scan(
+    entries: list[LoreEntryData],
+    text: str,
+    budget: int = 600,
+    depth: int = 0,
+    seen: set[str] | None = None,
+) -> LoreResult:
+    """Select lore entries relevant to ``text`` within ``budget`` tokens.
+
+    ``seen`` carries entry identities across recursion so an entry is never
+    injected twice.
+    """
+    seen = seen if seen is not None else set()
+    haystack = text.lower()
+
+    candidates: list[tuple[LoreEntryData, list[str]]] = []
+    for entry in entries:
+        identity = f"{entry.name}|{entry.content[:60]}"
+        if identity in seen:
+            continue
+        matched = _entry_matches(entry, haystack)
+        if matched:
+            candidates.append((entry, matched))
+
+    # Highest priority first; stable on insertion order for ties.
+    candidates.sort(key=lambda pair: -pair[0].priority)
+
+    selected: list[MatchedEntry] = []
+    dropped: list[str] = []
+    used = 0
+
+    for entry, matched in candidates:
+        cost = estimate_tokens(entry.content)
+        if used + cost > budget:
+            dropped.append(entry.name or entry.content[:40])
+            continue
+        used += cost
+        selected.append(
+            MatchedEntry(
+                name=entry.name or entry.content[:40],
+                content=entry.content,
+                priority=entry.priority,
+                matched_keys=matched,
+                tokens=cost,
+            )
+        )
+        seen.add(f"{entry.name}|{entry.content[:60]}")
+
+    # Bounded recursion: injected text may trigger further entries.
+    if depth < MAX_RECURSION_DEPTH and selected:
+        injected = "\n".join(item.content for item in selected)
+        nested = scan(
+            entries,
+            injected,
+            budget=max(0, budget - used),
+            depth=depth + 1,
+            seen=seen,
+        )
+        if nested.entries:
+            selected.extend(nested.entries)
+            used += nested.tokens_used
+            dropped.extend(nested.dropped)
+
+    return LoreResult(entries=selected, dropped=dropped, tokens_used=used, budget=budget)

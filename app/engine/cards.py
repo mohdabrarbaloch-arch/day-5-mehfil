@@ -1,32 +1,41 @@
-"""Character Card V2 parsing, validation and export.
+"""Character Card V2 — parse, validate, export.
 
-The V2 spec is what the character-card community actually exchanges, so
-Mehfil speaks it natively rather than inventing a private format. That means
-a card exported from here opens in SillyTavern, and a card downloaded from
-a card site imports here without a conversion step.
+The V2 spec is the de-facto interchange format for character cards. Supporting
+it means a user can import a card from anywhere and keep their work, and export
+back out without lock-in.
 
-Spec reference: https://github.com/malfoyslastname/character-card-spec-v2
+Spec shape::
 
-We also accept the older flat "v1" shape, because a large share of cards in
-circulation are still v1 and refusing them would be user-hostile. v1 cards
-are upgraded on import and always exported as v2.
+    {
+      "spec": "chara_card_v2",
+      "spec_version": "2.0",
+      "data": {
+        "name": "...", "description": "...", "personality": "...",
+        "scenario": "...", "first_mes": "...", "mes_example": "...",
+        "creator_notes": "...", "system_prompt": "...",
+        "post_history_instructions": "...",
+        "alternate_greetings": ["..."],
+        "character_book": {"entries": [...]},
+        "tags": ["..."], "creator": "...", "character_version": "..."
+      }
+    }
+
+We also accept the older flat V1 shape and upgrade it, because a lot of cards
+in the wild are still V1.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any
 
 SPEC_NAME = "chara_card_v2"
 SPEC_VERSION = "2.0"
 
-# Hard caps. These exist so a malicious or broken card cannot exhaust memory
-# or blow the context budget before the user has even opened it.
-MAX_FIELD_CHARS = 20_000
-MAX_ALTERNATE_GREETINGS = 20
-MAX_LORE_ENTRIES = 200
+MAX_NAME = 80
+MAX_TEXT = 20_000
 MAX_TAGS = 20
+MAX_GREETINGS = 20
 
 
 class CardError(ValueError):
@@ -34,9 +43,18 @@ class CardError(ValueError):
 
 
 @dataclass
-class CharacterCard:
-    """A normalised character card, always in v2 shape internally."""
+class LoreEntryData:
+    keys: list[str]
+    content: str
+    priority: int = 10
+    enabled: bool = True
+    constant: bool = False
+    case_sensitive: bool = False
+    name: str = ""
 
+
+@dataclass
+class Card:
     name: str
     description: str = ""
     personality: str = ""
@@ -50,160 +68,168 @@ class CharacterCard:
     tags: list[str] = field(default_factory=list)
     creator: str = ""
     character_version: str = ""
-    character_book: dict[str, Any] | None = None
-    extensions: dict[str, Any] = field(default_factory=dict)
+    lore: list[LoreEntryData] = field(default_factory=list)
 
     def to_v2(self) -> dict[str, Any]:
-        """Serialise back to a spec-compliant v2 card."""
-        data: dict[str, Any] = {
-            "name": self.name,
-            "description": self.description,
-            "personality": self.personality,
-            "scenario": self.scenario,
-            "first_mes": self.first_mes,
-            "mes_example": self.mes_example,
-            "creator_notes": self.creator_notes,
-            "system_prompt": self.system_prompt,
-            "post_history_instructions": self.post_history_instructions,
-            "alternate_greetings": list(self.alternate_greetings),
-            "tags": list(self.tags),
-            "creator": self.creator,
-            "character_version": self.character_version,
-            "extensions": dict(self.extensions),
+        """Serialise back to a spec-shaped V2 dict."""
+        return {
+            "spec": SPEC_NAME,
+            "spec_version": SPEC_VERSION,
+            "data": {
+                "name": self.name,
+                "description": self.description,
+                "personality": self.personality,
+                "scenario": self.scenario,
+                "first_mes": self.first_mes,
+                "mes_example": self.mes_example,
+                "creator_notes": self.creator_notes,
+                "system_prompt": self.system_prompt,
+                "post_history_instructions": self.post_history_instructions,
+                "alternate_greetings": list(self.alternate_greetings),
+                "character_book": {
+                    "entries": [
+                        {
+                            "keys": list(entry.keys),
+                            "content": entry.content,
+                            "priority": entry.priority,
+                            "enabled": entry.enabled,
+                            "constant": entry.constant,
+                            "case_sensitive": entry.case_sensitive,
+                            "name": entry.name,
+                        }
+                        for entry in self.lore
+                    ]
+                },
+                "tags": list(self.tags),
+                "creator": self.creator,
+                "character_version": self.character_version,
+            },
         }
-        if self.character_book is not None:
-            data["character_book"] = self.character_book
-        return {"spec": SPEC_NAME, "spec_version": SPEC_VERSION, "data": data}
-
-    def to_json(self, indent: int = 2) -> str:
-        return json.dumps(self.to_v2(), ensure_ascii=False, indent=indent)
 
 
-def _as_str(value: Any, field_name: str) -> str:
-    """Coerce a field to a bounded string, rejecting non-scalar junk."""
+def _as_str(value: Any, limit: int = MAX_TEXT) -> str:
     if value is None:
         return ""
-    if isinstance(value, (dict, list)):
-        raise CardError(f"field '{field_name}' must be a string, got {type(value).__name__}")
-    text = str(value)
-    if len(text) > MAX_FIELD_CHARS:
-        raise CardError(
-            f"field '{field_name}' is {len(text)} characters, over the {MAX_FIELD_CHARS} limit"
-        )
-    return text
+    if not isinstance(value, str):
+        value = str(value)
+    return value.strip()[:limit]
 
 
-def _as_str_list(value: Any, field_name: str, limit: int) -> list[str]:
-    if value is None:
+def _as_str_list(value: Any, limit: int) -> list[str]:
+    if not value:
         return []
     if isinstance(value, str):
-        # Some v1 cards store tags as a comma-separated string.
-        return [part.strip() for part in value.split(",") if part.strip()][:limit]
+        value = [value]
     if not isinstance(value, list):
-        raise CardError(f"field '{field_name}' must be a list")
+        return []
     out: list[str] = []
-    for item in value[:limit]:
-        if isinstance(item, (dict, list)):
-            continue
-        text = str(item).strip()
+    for item in value:
+        text = _as_str(item, 200)
         if text:
-            out.append(text[:500])
-    return out
+            out.append(text)
+    return out[:limit]
 
 
-def parse_card(payload: str | dict[str, Any]) -> CharacterCard:
-    """Parse a v1 or v2 card from JSON text or an already-decoded dict."""
-    if isinstance(payload, str):
-        try:
-            raw = json.loads(payload)
-        except json.JSONDecodeError as exc:
-            raise CardError(f"card is not valid JSON: {exc.msg} at line {exc.lineno}") from exc
-    elif isinstance(payload, dict):
-        raw = payload
-    else:
-        raise CardError("card must be a JSON object or a JSON string")
-
+def _parse_lore(raw: Any) -> list[LoreEntryData]:
+    """Parse a character_book. Accepts both V2 and V1 entry shapes."""
     if not isinstance(raw, dict):
-        raise CardError("card must be a JSON object")
+        return []
+    entries = raw.get("entries")
+    if not isinstance(entries, list):
+        return []
 
-    # v2 wraps everything in "data"; v1 is flat.
-    if raw.get("spec") == SPEC_NAME or isinstance(raw.get("data"), dict):
-        data = raw.get("data")
-        if not isinstance(data, dict):
-            raise CardError("v2 card is missing its 'data' object")
-    else:
-        data = raw
-
-    name = _as_str(data.get("name"), "name").strip()
-    if not name:
-        raise CardError("card is missing a 'name'")
-
-    book = data.get("character_book")
-    if book is not None and not isinstance(book, dict):
-        raise CardError("'character_book' must be an object")
-    if isinstance(book, dict):
-        entries = book.get("entries")
-        if isinstance(entries, list) and len(entries) > MAX_LORE_ENTRIES:
-            raise CardError(
-                f"character_book has {len(entries)} entries, over the {MAX_LORE_ENTRIES} limit"
+    parsed: list[LoreEntryData] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        # V1 used `key` (list) and `keysecondary`; V2 uses `keys`.
+        keys = _as_str_list(item.get("keys") or item.get("key"), 20)
+        content = _as_str(item.get("content"))
+        if not keys or not content:
+            continue
+        try:
+            priority = int(item.get("priority", item.get("order", 10)))
+        except (TypeError, ValueError):
+            priority = 10
+        parsed.append(
+            LoreEntryData(
+                keys=keys,
+                content=content,
+                priority=max(0, min(100, priority)),
+                enabled=bool(item.get("enabled", True)),
+                constant=bool(item.get("constant", False)),
+                case_sensitive=bool(item.get("case_sensitive", False)),
+                name=_as_str(item.get("name"), 120),
             )
+        )
+    return parsed
 
-    extensions = data.get("extensions")
-    if extensions is not None and not isinstance(extensions, dict):
-        extensions = {}
 
-    return CharacterCard(
+def parse_card(payload: Any) -> Card:
+    """Parse a V2 (or legacy V1) card dict into a :class:`Card`.
+
+    Raises :class:`CardError` on anything unusable.
+    """
+    if not isinstance(payload, dict):
+        raise CardError("Card must be a JSON object.")
+
+    # V2 wraps everything in `data`; V1 is flat.
+    data = payload["data"] if isinstance(payload.get("data"), dict) else payload
+
+    name = _as_str(data.get("name"), MAX_NAME)
+    if not name:
+        raise CardError("Card is missing a name.")
+
+    card = Card(
         name=name,
-        description=_as_str(data.get("description"), "description"),
-        personality=_as_str(data.get("personality"), "personality"),
-        scenario=_as_str(data.get("scenario"), "scenario"),
-        first_mes=_as_str(data.get("first_mes"), "first_mes"),
-        mes_example=_as_str(data.get("mes_example"), "mes_example"),
-        creator_notes=_as_str(data.get("creator_notes"), "creator_notes"),
-        system_prompt=_as_str(data.get("system_prompt"), "system_prompt"),
-        post_history_instructions=_as_str(
-            data.get("post_history_instructions"), "post_history_instructions"
-        ),
-        alternate_greetings=_as_str_list(
-            data.get("alternate_greetings"), "alternate_greetings", MAX_ALTERNATE_GREETINGS
-        ),
-        tags=_as_str_list(data.get("tags"), "tags", MAX_TAGS),
-        creator=_as_str(data.get("creator"), "creator"),
-        character_version=_as_str(data.get("character_version"), "character_version"),
-        character_book=book,
-        extensions=extensions or {},
+        description=_as_str(data.get("description")),
+        personality=_as_str(data.get("personality")),
+        scenario=_as_str(data.get("scenario")),
+        first_mes=_as_str(data.get("first_mes") or data.get("first_message")),
+        mes_example=_as_str(data.get("mes_example") or data.get("example_dialogue")),
+        creator_notes=_as_str(data.get("creator_notes")),
+        system_prompt=_as_str(data.get("system_prompt")),
+        post_history_instructions=_as_str(data.get("post_history_instructions")),
+        alternate_greetings=_as_str_list(data.get("alternate_greetings"), MAX_GREETINGS),
+        tags=_as_str_list(data.get("tags"), MAX_TAGS),
+        creator=_as_str(data.get("creator"), 120),
+        character_version=_as_str(data.get("character_version"), 40),
+        lore=_parse_lore(data.get("character_book")),
     )
 
+    if not any([card.description, card.personality, card.scenario, card.first_mes]):
+        raise CardError(
+            "Card has a name but no content — at least one of description, "
+            "personality, scenario or first_mes is required."
+        )
 
-def validate_card(card: CharacterCard) -> list[str]:
-    """Return human-readable warnings. An empty list means the card is clean.
+    return card
 
-    These are warnings, not errors: a card with no description still works,
-    it just produces a thin persona. We surface the problem instead of
-    silently accepting it.
-    """
+
+def validate_card(card: Card) -> list[str]:
+    """Return a list of human-readable warnings. Empty list means clean."""
     warnings: list[str] = []
 
-    if not card.description.strip() and not card.personality.strip():
+    if not card.description and not card.personality:
         warnings.append(
-            "No description and no personality: the model has almost nothing to go on. "
-            "Add at least a few sentences about who this character is."
+            "No description or personality — the character has nothing to be "
+            "built from and will read as a generic assistant."
         )
-    if not card.first_mes.strip():
-        warnings.append("No first message: the chat will open empty instead of in character.")
-    if not card.scenario.strip():
-        warnings.append("No scenario: the character has no setting to react to.")
-    if card.mes_example.strip() and "{{char}}" not in card.mes_example:
+    if not card.mes_example:
+        warnings.append("No example dialogue — voice fidelity cannot be measured without it.")
+    if not card.first_mes:
+        warnings.append("No first message — the chat will open empty.")
+    if len(card.name) > 40:
+        warnings.append("Name is long; it will be truncated in the character list.")
+    if card.description and len(card.description) > 4000:
         warnings.append(
-            "mes_example does not use {{char}} or {{user}} macros, so the model may not "
-            "understand who is speaking in the examples."
+            "Description is very long and will consume a large share of the "
+            "context budget on every turn."
         )
-    if len(card.description) > 8_000:
-        warnings.append(
-            f"Description is {len(card.description)} characters. Long descriptions eat the "
-            "context budget on every single turn; consider moving detail into the lorebook."
-        )
-    if card.character_book and not card.character_book.get("entries"):
-        warnings.append("character_book is present but has no entries.")
-
+    for entry in card.lore:
+        if entry.enabled and not entry.keys and not entry.constant:
+            warnings.append(
+                f"Lore entry '{entry.name or entry.content[:30]}' has no keys and "
+                "is not constant — it will never trigger."
+            )
     return warnings

@@ -1,26 +1,17 @@
-"""Prompt compiler: card + lore + history -> one inspectable prompt.
+"""Prompt compiler — turn a card + history into an inspectable bundle.
 
-The whole point of Mehfil is that this step is visible. Most character
-platforms assemble a prompt somewhere inside a library and never show it to
-you, which makes "why did the character change?" unanswerable.
+The whole point of this module is that the output is *not* a string. It is a
+list of named blocks with token counts, so the UI can show exactly what the
+model will receive, in what order, and what got dropped to make it fit.
 
-Here the prompt is a list of named blocks, each with its own token count, in
-a fixed order. The order is fixed on purpose: models are sensitive to where
-instructions sit, so a prompt that reshuffles between turns produces a
-character that drifts for no visible reason.
+Block order is fixed and intentional:
 
-Block order (and why):
+    system → persona → scenario → lore → examples → history → post_history → user
 
-    1. system        - the card's system_prompt, or a generated default
-    2. persona       - name, description, personality
-    3. scenario      - the setting
-    4. lore          - triggered lorebook entries
-    5. examples      - mes_example, the strongest style signal
-    6. history       - the conversation so far
-    7. post_history  - the card's post_history_instructions, last word
-
-post_history goes last because it is the instruction the model reads most
-recently, and cards use it for "stay in character" style nudges.
+`post_history_instructions` sits *after* the history on purpose: it is the last
+thing the model reads before the user's turn, which is where reinforcement
+actually has effect. Putting it in the system block (as many tools do) buries
+it under thousands of tokens of chat.
 """
 
 from __future__ import annotations
@@ -28,214 +19,296 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
-from .cards import CharacterCard
-from .lorebook import LoreMatch, render
-from .tokenizer import count_tokens
+from .cards import Card
+from .lorebook import LoreResult
+from .tokenizer import estimate_tokens, truncate_to_budget
 
-# The order is load-bearing. Do not reorder without a reason you can defend.
-BLOCK_ORDER = (
-    "system",
-    "persona",
-    "scenario",
-    "lore",
-    "examples",
-    "history",
-    "post_history",
-)
+DEFAULT_CONTEXT_BUDGET = 4096
+DEFAULT_MAX_REPLY = 512
 
-DEFAULT_SYSTEM = (
-    "You are {{char}}. Stay in character at all times. Write in the first person, "
-    "as {{char}}, and never speak or act for {{user}}. Keep replies to a few "
-    "sentences unless the scene calls for more."
-)
+# Share of the budget each block may claim before history gets squeezed.
+# These are ceilings, not reservations — unused space flows to history.
+BLOCK_CEILINGS = {
+    "system": 0.10,
+    "persona": 0.30,
+    "scenario": 0.10,
+    "lore": 0.20,
+    "examples": 0.25,
+    "post_history": 0.08,
+}
 
 
 @dataclass
-class PromptBlock:
-    """One named section of the compiled prompt."""
-
+class Block:
     name: str
     content: str
     tokens: int
-    source: str = ""
+    truncated: bool = False
 
-    def as_dict(self) -> dict:
+    @property
+    def empty(self) -> bool:
+        return not self.content.strip()
+
+
+@dataclass
+class FitReport:
+    """What fit, what did not, and why. Surfaced in the UI and the API."""
+
+    budget: int
+    used: int
+    reserved_for_reply: int
+    history_messages_kept: int
+    history_messages_dropped: int
+    truncated_blocks: list[str] = field(default_factory=list)
+    dropped_lore: list[str] = field(default_factory=list)
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.budget - self.used - self.reserved_for_reply)
+
+    @property
+    def utilisation(self) -> float:
+        if self.budget <= 0:
+            return 0.0
+        return round((self.used + self.reserved_for_reply) / self.budget, 3)
+
+    def to_dict(self) -> dict:
         return {
-            "name": self.name,
-            "content": self.content,
-            "tokens": self.tokens,
-            "source": self.source,
+            "budget": self.budget,
+            "used": self.used,
+            "reserved_for_reply": self.reserved_for_reply,
+            "remaining": self.remaining,
+            "utilisation": self.utilisation,
+            "history_messages_kept": self.history_messages_kept,
+            "history_messages_dropped": self.history_messages_dropped,
+            "truncated_blocks": self.truncated_blocks,
+            "dropped_lore": self.dropped_lore,
         }
 
 
 @dataclass
-class CompiledPrompt:
-    """A compiled prompt, ready to send and ready to inspect."""
-
-    blocks: list[PromptBlock] = field(default_factory=list)
-    messages: list[dict] = field(default_factory=list)
-    fingerprint: str = ""
-    lore_matches: list[LoreMatch] = field(default_factory=list)
+class PromptBundle:
+    blocks: list[Block]
+    fit: FitReport
+    fingerprint: str
 
     @property
-    def total_tokens(self) -> int:
-        return sum(block.tokens for block in self.blocks)
+    def messages(self) -> list[dict[str, str]]:
+        """Flatten to a chat-completions style message list."""
+        system_parts = [
+            block.content
+            for block in self.blocks
+            if block.name in {"system", "persona", "scenario", "lore", "examples"}
+            and not block.empty
+        ]
+        messages: list[dict[str, str]] = []
+        if system_parts:
+            messages.append({"role": "system", "content": "\n\n".join(system_parts)})
 
-    @property
-    def system_text(self) -> str:
-        """Everything that goes in the system message."""
-        parts = [b.content for b in self.blocks if b.name != "history" and b.content.strip()]
+        for block in self.blocks:
+            if block.name == "history" and not block.empty:
+                messages.extend(_split_history(block.content))
+            elif block.name == "post_history" and not block.empty:
+                messages.append({"role": "system", "content": block.content})
+            elif block.name == "user" and not block.empty:
+                messages.append({"role": "user", "content": block.content})
+        return messages
+
+    def render(self) -> str:
+        """Human-readable rendering, used by the prompt inspector."""
+        parts = []
+        for block in self.blocks:
+            if block.empty:
+                continue
+            parts.append(f"### {block.name.upper()} ({block.tokens} tok)\n{block.content}")
         return "\n\n".join(parts)
 
-    def as_dict(self) -> dict:
-        return {
-            "blocks": [b.as_dict() for b in self.blocks],
-            "total_tokens": self.total_tokens,
-            "fingerprint": self.fingerprint,
-            "lore_matches": [m.as_dict() for m in self.lore_matches],
-            "messages": self.messages,
-        }
+
+def _split_history(rendered: str) -> list[dict[str, str]]:
+    """Split a rendered history block back into role-tagged messages."""
+    messages: list[dict[str, str]] = []
+    for chunk in rendered.split("\n\n"):
+        if chunk.startswith("{{user}}:"):
+            messages.append({"role": "user", "content": chunk[len("{{user}}:") :].strip()})
+        elif chunk.startswith("{{char}}:"):
+            messages.append({"role": "assistant", "content": chunk[len("{{char}}:") :].strip()})
+    return messages
 
 
-def substitute(text: str, char_name: str, user_name: str) -> str:
-    """Replace {{char}} and {{user}} in a single pass.
-
-    One pass, not a loop: a character literally named "{{user}}" would
-    otherwise cause a second round of substitution and mangle the prompt.
-    """
-    if not text:
-        return ""
-    return text.replace("{{char}}", char_name).replace("{{user}}", user_name)
-
-
-def _fingerprint(blocks: list[PromptBlock]) -> str:
-    """A short, stable hash of the prompt's structure and content."""
-    digest = hashlib.sha256()
-    for block in blocks:
-        digest.update(block.name.encode("utf-8"))
-        digest.update(b"\x00")
-        digest.update(block.content.encode("utf-8"))
-        digest.update(b"\x00")
-    return digest.hexdigest()[:12]
+def _substitute(text: str, char_name: str, user_name: str) -> str:
+    """Replace the {{char}} / {{user}} macros used by the card spec."""
+    return (
+        text.replace("{{char}}", char_name)
+        .replace("{{Char}}", char_name)
+        .replace("{{user}}", user_name)
+        .replace("{{User}}", user_name)
+    )
 
 
-def compile_prompt(
-    card: CharacterCard,
-    history: list[dict] | None = None,
-    *,
+def _fit_block(name: str, content: str, budget: int, ceiling: float) -> tuple[Block, bool]:
+    """Trim a block to its ceiling. Returns (block, was_truncated)."""
+    if not content.strip():
+        return Block(name=name, content="", tokens=0), False
+
+    cap = max(1, int(budget * ceiling))
+    tokens = estimate_tokens(content)
+    if tokens <= cap:
+        return Block(name=name, content=content, tokens=tokens), False
+
+    trimmed = truncate_to_budget(content, cap)
+    return (
+        Block(name=name, content=trimmed, tokens=estimate_tokens(trimmed), truncated=True),
+        True,
+    )
+
+
+def build(
+    card: Card,
+    history: list[dict[str, str]],
+    user_text: str,
+    lore: LoreResult | None = None,
+    context_budget: int = DEFAULT_CONTEXT_BUDGET,
+    max_reply_tokens: int = DEFAULT_MAX_REPLY,
     user_name: str = "User",
-    lore_matches: list[LoreMatch] | None = None,
-    extra_system: str = "",
-) -> CompiledPrompt:
-    """Assemble the prompt for one turn.
+) -> PromptBundle:
+    """Compile a card, history and new turn into a :class:`PromptBundle`."""
+    char_name = card.name
+    budget = max(256, context_budget)
+    reserved = min(max_reply_tokens, budget // 2)
+    working = budget - reserved
 
-    `history` is a list of {role, content} dicts, oldest first, and should
-    NOT include the current user message -- that is appended by the caller
-    after fitting, so the budget check sees the real final prompt.
-    """
-    char_name = card.name or "Character"
-    history = history or []
-    lore_matches = lore_matches or []
+    truncated: list[str] = []
+    blocks: list[Block] = []
 
-    blocks: list[PromptBlock] = []
-
-    # 1. system
-    system_source = card.system_prompt.strip() or DEFAULT_SYSTEM
-    system_text = substitute(system_source, char_name, user_name)
-    if extra_system.strip():
-        system_text = f"{system_text}\n\n{substitute(extra_system, char_name, user_name)}"
-    blocks.append(
-        PromptBlock(
-            name="system",
-            content=system_text,
-            tokens=count_tokens(system_text),
-            source="card.system_prompt" if card.system_prompt.strip() else "default",
-        )
+    # 1. system — identity and hard rules
+    system_text = card.system_prompt or (
+        f"You are {char_name}. Stay in character at all times. "
+        f"Never mention that you are an AI, a model, or a program. "
+        f"Never break character to offer help as an assistant. "
+        f"Write only {char_name}'s next reply — no narration of {user_name}'s actions."
     )
+    block, cut = _fit_block(
+        "system", _substitute(system_text, char_name, user_name), working, BLOCK_CEILINGS["system"]
+    )
+    blocks.append(block)
+    if cut:
+        truncated.append("system")
 
-    # 2. persona
-    persona_parts: list[str] = []
-    if card.description.strip():
-        persona_parts.append(substitute(card.description.strip(), char_name, user_name))
-    if card.personality.strip():
-        persona_parts.append(
-            f"Personality: {substitute(card.personality.strip(), char_name, user_name)}"
-        )
+    # 2. persona — description + personality
+    persona_parts = [part for part in (card.description, card.personality) if part.strip()]
     persona_text = "\n\n".join(persona_parts)
-    blocks.append(
-        PromptBlock(
-            name="persona",
-            content=persona_text,
-            tokens=count_tokens(persona_text),
-            source="card.description+personality",
-        )
+    block, cut = _fit_block(
+        "persona",
+        _substitute(persona_text, char_name, user_name),
+        working,
+        BLOCK_CEILINGS["persona"],
     )
+    blocks.append(block)
+    if cut:
+        truncated.append("persona")
 
     # 3. scenario
-    scenario_text = substitute(card.scenario.strip(), char_name, user_name)
-    blocks.append(
-        PromptBlock(
-            name="scenario",
-            content=scenario_text,
-            tokens=count_tokens(scenario_text),
-            source="card.scenario",
-        )
+    block, cut = _fit_block(
+        "scenario",
+        _substitute(card.scenario, char_name, user_name),
+        working,
+        BLOCK_CEILINGS["scenario"],
+    )
+    blocks.append(block)
+    if cut:
+        truncated.append("scenario")
+
+    # 4. lore — already budget-capped by the lorebook
+    lore_text = lore.text if lore else ""
+    block, cut = _fit_block(
+        "lore", _substitute(lore_text, char_name, user_name), working, BLOCK_CEILINGS["lore"]
+    )
+    blocks.append(block)
+    if cut:
+        truncated.append("lore")
+
+    # 5. examples — few-shot voice demonstration
+    block, cut = _fit_block(
+        "examples",
+        _substitute(card.mes_example, char_name, user_name),
+        working,
+        BLOCK_CEILINGS["examples"],
+    )
+    blocks.append(block)
+    if cut:
+        truncated.append("examples")
+
+    # 6. history — gets whatever is left, newest first
+    used_so_far = sum(b.tokens for b in blocks)
+    history_budget = max(0, working - used_so_far)
+
+    kept: list[str] = []
+    kept_count = 0
+    dropped_count = 0
+    running = 0
+    for message in reversed(history):
+        role = message.get("role", "user")
+        content = (message.get("content") or "").strip()
+        if not content:
+            continue
+        speaker = "{{char}}" if role == "assistant" else "{{user}}"
+        rendered = f"{speaker}: {content}"
+        cost = estimate_tokens(rendered)
+        if running + cost > history_budget:
+            dropped_count += 1
+            continue
+        running += cost
+        kept.append(rendered)
+        kept_count += 1
+
+    kept.reverse()
+    history_text = "\n\n".join(kept)
+    blocks.append(Block(name="history", content=history_text, tokens=running))
+
+    # 7. post_history — last thing before the user's turn
+    block, cut = _fit_block(
+        "post_history",
+        _substitute(card.post_history_instructions, char_name, user_name),
+        working,
+        BLOCK_CEILINGS["post_history"],
+    )
+    blocks.append(block)
+    if cut:
+        truncated.append("post_history")
+
+    # 8. user — the actual turn, never truncated silently
+    user_block = Block(
+        name="user",
+        content=_substitute(user_text, char_name, user_name),
+        tokens=estimate_tokens(user_text),
+    )
+    blocks.append(user_block)
+
+    total_used = sum(b.tokens for b in blocks)
+    fit = FitReport(
+        budget=budget,
+        used=total_used,
+        reserved_for_reply=reserved,
+        history_messages_kept=kept_count,
+        history_messages_dropped=dropped_count,
+        truncated_blocks=truncated,
+        dropped_lore=list(lore.dropped) if lore else [],
     )
 
-    # 4. lore
-    lore_text = substitute(render(lore_matches), char_name, user_name)
-    blocks.append(
-        PromptBlock(
-            name="lore",
-            content=lore_text,
-            tokens=count_tokens(lore_text),
-            source=f"{len(lore_matches)} entr{'y' if len(lore_matches) == 1 else 'ies'}",
-        )
-    )
+    fingerprint = _fingerprint(blocks)
+    return PromptBundle(blocks=blocks, fit=fit, fingerprint=fingerprint)
 
-    # 5. examples
-    examples_text = substitute(card.mes_example.strip(), char_name, user_name)
-    blocks.append(
-        PromptBlock(
-            name="examples",
-            content=examples_text,
-            tokens=count_tokens(examples_text),
-            source="card.mes_example",
-        )
-    )
 
-    # 6. history -- counted but not merged into the system message.
-    history_tokens = 0
-    for message in history:
-        history_tokens += count_tokens(str(message.get("content", ""))) + 4
-    blocks.append(
-        PromptBlock(
-            name="history",
-            content=f"{len(history)} message(s)",
-            tokens=history_tokens,
-            source="conversation",
-        )
-    )
+def _fingerprint(blocks: list[Block]) -> str:
+    """SHA-256 over the rendered prompt.
 
-    # 7. post_history
-    post_text = substitute(card.post_history_instructions.strip(), char_name, user_name)
-    blocks.append(
-        PromptBlock(
-            name="post_history",
-            content=post_text,
-            tokens=count_tokens(post_text),
-            source="card.post_history_instructions",
-        )
-    )
-
-    messages: list[dict] = [{"role": "system", "content": CompiledPrompt(
-        blocks=blocks
-    ).system_text}]
-    messages.extend(history)
-
-    return CompiledPrompt(
-        blocks=blocks,
-        messages=messages,
-        fingerprint=_fingerprint(blocks),
-        lore_matches=lore_matches,
-    )
+    Two prompts with the same fingerprint are byte-identical, which makes
+    "did my edit actually change what the model sees?" a one-line check.
+    """
+    digest = hashlib.sha256()
+    for block in blocks:
+        digest.update(block.name.encode())
+        digest.update(b"\x00")
+        digest.update(block.content.encode())
+        digest.update(b"\x01")
+    return digest.hexdigest()[:16]

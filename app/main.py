@@ -1,13 +1,4 @@
-"""Mehfil application entrypoint.
-
-Security posture, stated plainly:
-  - CORS is an explicit allowlist from settings, never "*".
-  - Rate limiting is applied to the whole API, tighter on auth.
-  - Static files are mounted only if the directory exists, so a missing
-    static dir cannot crash the API.
-  - The 404 handler returns JSON, not HTML, so the SPA's fetch calls can
-    parse it instead of choking on a page.
-"""
+"""Mehfil — application entrypoint."""
 
 from __future__ import annotations
 
@@ -15,84 +6,89 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import __version__
-from app.config import settings, warn_on_weak_config
-from app.database import init_db
-from app.deps import rate_limit
-from app.routers import auth, characters, chat, health
+from .config import settings
+from .database import init_db
+from .engine import active_backend
+from .routers import auth, characters, chat
+from .schemas import HealthResponse
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logging.basicConfig(level=logging.INFO if not settings.debug else logging.DEBUG)
 logger = logging.getLogger("mehfil")
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    """Create tables and log any weak configuration on startup."""
+async def lifespan(app: FastAPI):
     init_db()
-    for warning in warn_on_weak_config():
-        logger.warning(warning)
-    logger.info("Mehfil %s ready (env=%s)", __version__, settings.environment)
+    for warning in settings.warnings():
+        logger.warning("CONFIG: %s", warning)
+    logger.info("Mehfil up — backend=%s env=%s", active_backend(), settings.environment)
     yield
 
 
 app = FastAPI(
     title="Mehfil",
-    version=__version__,
     description=(
-        "An AI character platform where the prompt is a first-class object: "
-        "compiled in a fixed block order, fingerprinted, and inspectable."
+        "A character platform where the persona is a measurable contract, "
+        "not a paragraph. Compile, inspect, generate, and score voice fidelity."
     ),
+    version="1.0.0",
     lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url=None,
+    openapi_url="/api/openapi.json",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
-# Every API route is rate limited. Auth adds a tighter limit on top.
-api_dependencies = [Depends(rate_limit)]
+app.include_router(auth.router)
+app.include_router(characters.router)
+app.include_router(chat.router)
 
-app.include_router(health.router, prefix="/api")
-app.include_router(auth.router, prefix="/api")
-app.include_router(characters.router, prefix="/api", dependencies=api_dependencies)
-app.include_router(chat.router, prefix="/api", dependencies=api_dependencies)
+
+@app.get("/api/health", response_model=HealthResponse, tags=["meta"])
+def health() -> HealthResponse:
+    db_kind = "postgresql" if settings.database_url.startswith("postgres") else "sqlite"
+    return HealthResponse(
+        status="ok",
+        app=settings.app_name,
+        environment=settings.environment,
+        backend=active_backend(),
+        database=db_kind,
+        warnings=settings.warnings(),
+    )
 
 
 @app.exception_handler(404)
-async def not_found(_request: Request, exc):  # noqa: ANN001, ANN201
-    """JSON 404 for API paths, the SPA for everything else."""
-    detail = getattr(exc, "detail", "Not found")
-    return JSONResponse(status_code=404, content={"detail": detail})
+async def not_found(request: Request, exc):  # noqa: ANN001
+    """JSON 404 for API paths, SPA fallback for everything else."""
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(status_code=404, content={"detail": "Not found."})
+    index = STATIC_DIR / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    return JSONResponse(status_code=404, content={"detail": "Not found."})
 
 
-if STATIC_DIR.is_dir():
+if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
-    @app.get("/{path:path}", include_in_schema=False)
-    def spa_fallback(path: str) -> FileResponse:
-        """Serve index.html for client-side routes.
 
-        Anything that looks like a file is 404'd rather than served as HTML,
-        so a missing asset fails loudly instead of returning a page.
-        """
-        candidate = STATIC_DIR / path
-        if candidate.is_file():
-            return FileResponse(candidate)
-        if "." in Path(path).name:
-            return JSONResponse(status_code=404, content={"detail": "Not found"})
-        return FileResponse(STATIC_DIR / "index.html")
+# Vercel's Python runtime imports `app` from api/index.py.
+handler = app

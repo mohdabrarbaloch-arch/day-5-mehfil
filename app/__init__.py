@@ -1,3 +1,3 @@
-"""Mehfil - an AI character platform with an inspectable prompt."""
+"""Mehfil application package."""
 
 __version__ = "1.0.0"
