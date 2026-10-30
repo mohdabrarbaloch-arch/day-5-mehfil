@@ -1,0 +1,57 @@
+# Mehfil — local stack.
+#
+#   docker compose up --build
+#
+# Then open http://localhost:8000
+#
+# Postgres is included so the compose path exercises the same database the
+# app would use in production. For a quick look without Docker, plain
+# `uvicorn app.main:app` with the default SQLite URL is enough.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mehfil
+      POSTGRES_PASSWORD: mehfil
+      POSTGRES_DB: mehfil
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mehfil -d mehfil"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published to the host by default — the app reaches it over the
+    # compose network. Uncomment to inspect with psql from your machine.
+    # ports:
+    #   - "5432:5432"
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MEHFIL_ENV: production
+      # Override this. The app refuses to start in production with the default.
+      MEHFIL_SECRET_KEY: ${MEHFIL_SECRET_KEY:?set MEHFIL_SECRET_KEY in your shell or .env}
+      MEHFIL_DATABASE_URL: postgresql+psycopg://mehfil:mehfil@db:5432/mehfil
+      MEHFIL_BACKEND: ${MEHFIL_BACKEND:-none}
+      MEHFIL_OLLAMA_URL: ${MEHFIL_OLLAMA_URL:-http://host.docker.internal:11434}
+      MEHFIL_OLLAMA_MODEL: ${MEHFIL_OLLAMA_MODEL:-llama3.1:8b}
+      MEHFIL_OPENAI_BASE_URL: ${MEHFIL_OPENAI_BASE_URL:-https://api.openai.com/v1}
+      MEHFIL_OPENAI_API_KEY: ${MEHFIL_OPENAI_API_KEY:-}
+      MEHFIL_OPENAI_MODEL: ${MEHFIL_OPENAI_MODEL:-gpt-4o-mini}
+      MEHFIL_CONTEXT_BUDGET: ${MEHFIL_CONTEXT_BUDGET:-4096}
+      MEHFIL_CORS_ORIGINS: ${MEHFIL_CORS_ORIGINS:-http://localhost:8000}
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      # Lets the container reach an Ollama server running on the host.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
