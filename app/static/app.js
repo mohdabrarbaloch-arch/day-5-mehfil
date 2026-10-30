@@ -486,17 +486,18 @@
     form.reset();
 
     if (character) {
-      form.name.value = character.name || "";
-      form.description.value = character.description || "";
-      form.personality.value = character.personality || "";
-      form.scenario.value = character.scenario || "";
-      form.first_mes.value = character.first_mes || "";
-      form.mes_example.value = character.mes_example || "";
-      form.system_prompt.value = character.system_prompt || "";
-      form.post_history_instructions.value = character.post_history_instructions || "";
-      form.alternate_greetings.value = (character.alternate_greetings || []).join("\n");
-      form.tags.value = (character.tags || []).join(", ");
-      form.is_public.checked = !!character.is_public;
+      const el = form.elements;
+      el.name.value = character.name || "";
+      el.description.value = character.description || "";
+      el.personality.value = character.personality || "";
+      el.scenario.value = character.scenario || "";
+      el.first_mes.value = character.first_mes || "";
+      el.mes_example.value = character.mes_example || "";
+      el.system_prompt.value = character.system_prompt || "";
+      el.post_history_instructions.value = character.post_history_instructions || "";
+      el.alternate_greetings.value = (character.alternate_greetings || []).join("\n");
+      el.tags.value = (character.tags || []).join(", ");
+      el.is_public.checked = !!character.is_public;
     }
     renderLore();
   }
@@ -540,7 +541,7 @@
 
       const keysInput = document.createElement("input");
       keysInput.type = "text";
-      keysInput.placeholder = "Trigger keys, comma separated";
+      keysInput.placeholder = "Trigger keys, comma separated (any one fires)";
       keysInput.value = (entry.keys || []).join(", ");
       keysInput.addEventListener("input", (e) => {
         entry.keys = e.target.value.split(",").map((k) => k.trim()).filter(Boolean);
