@@ -3,201 +3,226 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
-<meta name="description" content="Mehfil — an AI character platform where you can read the prompt.">
-<title>Mehfil — characters with a visible prompt</title>
+<meta name="theme-color" content="#0d0b14">
+<meta name="description" content="Mehfil — an AI character platform where you can see the prompt. Character Card V2, token budgets, lorebook triggers.">
+<title>Mehfil — see the prompt</title>
 <link rel="stylesheet" href="/static/css/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌙</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎭</text></svg>">
 </head>
 <body>
 
-<!-- ── Sign in ─────────────────────────────────────────────────────────── -->
-<section id="view-auth" class="view auth-view">
+<!-- ── Auth gate ─────────────────────────────────────────────────────────── -->
+<section id="auth-view" class="auth-view">
   <div class="auth-card">
     <div class="brand">
       <span class="brand-mark">م</span>
       <div>
         <h1>Mehfil</h1>
-        <p class="brand-sub">Characters with a visible prompt</p>
+        <p class="brand-sub">محفل · where characters gather</p>
       </div>
     </div>
 
-    <div class="auth-tabs" role="tablist">
-      <button class="auth-tab is-active" data-mode="login" role="tab" aria-selected="true">Sign in</button>
-      <button class="auth-tab" data-mode="register" role="tab" aria-selected="false">Create account</button>
+    <p class="auth-lede">
+      Every character app hides the prompt. Mehfil shows it — the exact blocks,
+      the token count, and what got cut when it didn't fit.
+    </p>
+
+    <div class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="login" role="tab" aria-selected="true">Sign in</button>
+      <button class="tab" data-tab="register" role="tab" aria-selected="false">Create account</button>
     </div>
 
-    <form id="auth-form" class="auth-form" novalidate>
-      <label class="field" id="name-field" hidden>
-        <span>Display name</span>
-        <input type="text" name="display_name" autocomplete="name" maxlength="80" placeholder="What should characters call you?">
-      </label>
-      <label class="field">
-        <span>Email</span>
-        <input type="email" name="email" autocomplete="email" required placeholder="you@example.com">
-      </label>
-      <label class="field">
-        <span>Password</span>
-        <input type="password" name="password" autocomplete="current-password" required minlength="8" placeholder="At least 8 characters">
-      </label>
-      <p class="form-error" id="auth-error" role="alert" hidden></p>
-      <button type="submit" class="btn btn-primary btn-block" id="auth-submit">Sign in</button>
+    <form id="login-form" class="auth-form" autocomplete="on">
+      <label>Email<input type="email" name="email" required autocomplete="email" placeholder="you@example.com"></label>
+      <label>Password<input type="password" name="password" required autocomplete="current-password" placeholder="••••••••"></label>
+      <button type="submit" class="btn btn-primary">Sign in</button>
     </form>
 
-    <p class="auth-note">
-      No model connected? The app still works — it shows you the exact prompt
-      it would send, and says plainly that no model answered.
-    </p>
+    <form id="register-form" class="auth-form is-hidden" autocomplete="on">
+      <label>Display name<input type="text" name="display_name" required maxlength="80" placeholder="What should characters call you?"></label>
+      <label>Email<input type="email" name="email" required autocomplete="email" placeholder="you@example.com"></label>
+      <label>Password<input type="password" name="password" required minlength="8" maxlength="72" autocomplete="new-password" placeholder="At least 8 characters"></label>
+      <button type="submit" class="btn btn-primary">Create account</button>
+    </form>
+
+    <p id="auth-error" class="form-error" role="alert"></p>
   </div>
 </section>
 
-<!-- ── App ─────────────────────────────────────────────────────────────── -->
-<section id="view-app" class="view app-view" hidden>
+<!-- ── App shell ─────────────────────────────────────────────────────────── -->
+<div id="app-view" class="app-view is-hidden">
 
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-head">
-      <div class="brand brand-sm">
-        <span class="brand-mark">م</span>
-        <h1>Mehfil</h1>
+  <header class="topbar">
+    <button id="menu-toggle" class="icon-btn" aria-label="Menu">☰</button>
+    <div class="topbar-brand">
+      <span class="brand-mark sm">م</span>
+      <span>Mehfil</span>
+    </div>
+    <div class="topbar-right">
+      <span id="backend-badge" class="badge badge-muted" title="Generation backend">…</span>
+      <button id="logout-btn" class="icon-btn" aria-label="Sign out" title="Sign out">⏻</button>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-head">
+          <h2>Characters</h2>
+          <button id="new-character-btn" class="btn btn-ghost btn-sm" title="New character">+ New</button>
+        </div>
+        <ul id="character-list" class="list"></ul>
+        <p id="character-empty" class="empty-note">No characters yet. Create one, or import a card.</p>
       </div>
-      <button class="icon-btn" id="sidebar-close" aria-label="Close menu">✕</button>
-    </div>
 
-    <div class="sidebar-actions">
-      <button class="btn btn-primary btn-block" id="new-character">+ New character</button>
-      <button class="btn btn-ghost btn-block" id="import-card">Import card</button>
-    </div>
-
-    <div class="sidebar-section">
-      <h2 class="sidebar-title">Characters</h2>
-      <div id="character-list" class="character-list"></div>
-    </div>
-
-    <div class="sidebar-section">
-      <h2 class="sidebar-title">Your chats</h2>
-      <div id="chat-list" class="chat-list"></div>
-    </div>
-
-    <div class="sidebar-foot">
-      <div class="backend-pill" id="backend-pill">
-        <span class="dot"></span>
-        <span id="backend-label">checking…</span>
+      <div class="sidebar-section">
+        <div class="sidebar-head">
+          <h2>Chats</h2>
+        </div>
+        <ul id="chat-list" class="list"></ul>
+        <p id="chat-empty" class="empty-note">No chats yet.</p>
       </div>
-      <button class="link-btn" id="sign-out">Sign out</button>
-    </div>
-  </aside>
 
-  <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
-
-  <main class="main">
-    <header class="topbar">
-      <button class="icon-btn" id="sidebar-open" aria-label="Open menu">☰</button>
-      <div class="topbar-title">
-        <h2 id="chat-title">Pick a character</h2>
-        <p id="chat-subtitle">or create one of your own</p>
+      <div class="sidebar-foot">
+        <button id="import-btn" class="btn btn-ghost btn-sm">Import card</button>
+        <a href="/api/docs" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">API docs</a>
       </div>
-      <div class="topbar-actions">
-        <button class="btn btn-ghost btn-sm" id="inspect-prompt" disabled>Inspect prompt</button>
-      </div>
-    </header>
+    </aside>
 
-    <div class="messages" id="messages">
-      <div class="empty-state" id="empty-state">
-        <div class="empty-mark">م</div>
-        <h3>Nothing open yet</h3>
-        <p>Choose a character on the left, or make a new one. Every reply shows which backend produced it — and if none did, it says so.</p>
-      </div>
-    </div>
+    <!-- Main -->
+    <main class="main">
 
-    <form class="composer" id="composer" hidden>
-      <textarea id="composer-input" rows="1" placeholder="Say something…" maxlength="8000" aria-label="Message"></textarea>
-      <button type="submit" class="btn btn-primary" id="send-btn">Send</button>
-    </form>
-  </main>
-</section>
+      <!-- Empty state -->
+      <section id="welcome" class="welcome">
+        <h2>Pick a character, or make one</h2>
+        <p>
+          Mehfil compiles your card into a prompt you can read. Open the
+          <strong>Prompt</strong> panel in any chat to see every block, its token
+          cost, and exactly what was dropped to fit the budget.
+        </p>
+        <div class="welcome-actions">
+          <button id="welcome-new" class="btn btn-primary">Create a character</button>
+          <button id="welcome-import" class="btn btn-ghost">Import a card</button>
+        </div>
+      </section>
 
-<!-- ── Prompt inspector ────────────────────────────────────────────────── -->
-<div class="modal" id="prompt-modal" hidden>
-  <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
-    <div class="modal-head">
-      <div>
-        <h3 id="prompt-title">The prompt</h3>
-        <p class="modal-sub" id="prompt-sub">Exactly what would be sent.</p>
-      </div>
-      <button class="icon-btn" id="prompt-close" aria-label="Close">✕</button>
-    </div>
-    <div class="prompt-body" id="prompt-body"></div>
+      <!-- Chat -->
+      <section id="chat-panel" class="chat-panel is-hidden">
+        <div class="chat-head">
+          <div>
+            <h2 id="chat-title">Chat</h2>
+            <p id="chat-sub" class="chat-sub"></p>
+          </div>
+          <div class="chat-head-actions">
+            <button id="prompt-btn" class="btn btn-ghost btn-sm">Prompt</button>
+            <button id="new-chat-btn" class="btn btn-ghost btn-sm">New chat</button>
+          </div>
+        </div>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <form id="composer" class="composer">
+          <textarea id="composer-input" rows="1" placeholder="Say something…" maxlength="8000" required></textarea>
+          <button type="submit" id="send-btn" class="btn btn-primary">Send</button>
+        </form>
+        <p id="composer-hint" class="composer-hint"></p>
+      </section>
+    </main>
   </div>
 </div>
 
-<!-- ── Character editor ────────────────────────────────────────────────── -->
-<div class="modal" id="editor-modal" hidden>
-  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+<!-- ── Character editor modal ────────────────────────────────────────────── -->
+<div id="editor-modal" class="modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+  <div class="modal-card modal-wide">
     <div class="modal-head">
-      <h3 id="editor-title">New character</h3>
-      <button class="icon-btn" id="editor-close" aria-label="Close">✕</button>
+      <h2 id="editor-title">New character</h2>
+      <button class="icon-btn modal-close" aria-label="Close">✕</button>
     </div>
+
     <form id="editor-form" class="editor-form">
-      <label class="field">
-        <span>Name</span>
-        <input type="text" name="name" required maxlength="120" placeholder="e.g. Zainab from Lyari">
+      <div class="field-row">
+        <label>Name<input name="name" required maxlength="120" placeholder="Zainab"></label>
+        <label>Tags<input name="tags" placeholder="karachi, bookseller, urdu"></label>
+      </div>
+
+      <label>Description
+        <textarea name="description" rows="4" placeholder="Who is this? Age, background, what they want."></textarea>
       </label>
-      <label class="field">
-        <span>Description</span>
-        <textarea name="description" rows="4" maxlength="20000" placeholder="Who are they? Where are they from? What do they care about?"></textarea>
+
+      <label>Personality
+        <textarea name="personality" rows="2" placeholder="Sharp, impatient, secretly kind."></textarea>
       </label>
-      <label class="field">
-        <span>Personality</span>
-        <textarea name="personality" rows="2" maxlength="20000" placeholder="Dry humour, impatient, kind underneath"></textarea>
+
+      <label>Scenario
+        <textarea name="scenario" rows="2" placeholder="A cramped bookshop off Tariq Road, monsoon outside."></textarea>
       </label>
-      <label class="field">
-        <span>Scenario</span>
-        <textarea name="scenario" rows="2" maxlength="20000" placeholder="A late-night chai stall in Karachi"></textarea>
+
+      <label>First message
+        <textarea name="first_mes" rows="3" placeholder="Ao, kya dhoond rahe ho?"></textarea>
       </label>
-      <label class="field">
-        <span>First message</span>
-        <textarea name="first_mes" rows="3" maxlength="20000" placeholder="What do they say when the chat opens?"></textarea>
+
+      <label>Dialogue examples
+        <textarea name="mes_example" rows="4" placeholder="{{user}}: Kya hai ye?&#10;{{char}}: Tum khud parh lo."></textarea>
       </label>
-      <label class="field">
-        <span>Example dialogue</span>
-        <textarea name="mes_example" rows="3" maxlength="20000" placeholder="{{user}}: ...&#10;{{char}}: ..."></textarea>
-      </label>
-      <label class="field field-inline">
-        <input type="checkbox" name="is_public">
-        <span>Make this character public</span>
-      </label>
-      <p class="form-error" id="editor-error" role="alert" hidden></p>
+
+      <details class="advanced">
+        <summary>Advanced</summary>
+        <label>System prompt
+          <textarea name="system_prompt" rows="2" placeholder="Leave blank to use the default."></textarea>
+        </label>
+        <label>Post-history instructions
+          <textarea name="post_history_instructions" rows="2" placeholder="Read last, so it carries the most weight."></textarea>
+        </label>
+        <label>Lorebook (JSON)
+          <textarea name="character_book" rows="4" placeholder='{"entries":[{"keys":["Tariq Road"],"content":"..."}]}'></textarea>
+        </label>
+        <label class="checkbox"><input type="checkbox" name="is_public"> Make this character public</label>
+      </details>
+
+      <p id="editor-error" class="form-error" role="alert"></p>
+
       <div class="modal-actions">
-        <button type="button" class="btn btn-ghost" id="editor-cancel">Cancel</button>
+        <button type="button" class="btn btn-ghost modal-close">Cancel</button>
         <button type="submit" class="btn btn-primary">Save character</button>
       </div>
     </form>
   </div>
 </div>
 
-<!-- ── Import card ─────────────────────────────────────────────────────── -->
-<div class="modal" id="import-modal" hidden>
-  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="import-title">
+<!-- ── Prompt inspector modal ────────────────────────────────────────────── -->
+<div id="prompt-modal" class="modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+  <div class="modal-card modal-wide">
     <div class="modal-head">
-      <h3 id="import-title">Import a character card</h3>
-      <button class="icon-btn" id="import-close" aria-label="Close">✕</button>
+      <h2 id="prompt-title">Compiled prompt</h2>
+      <button class="icon-btn modal-close" aria-label="Close">✕</button>
     </div>
-    <p class="modal-sub">Paste a Character Card V2 (or v1) JSON. Cards from SillyTavern and card sites work as-is.</p>
-    <form id="import-form" class="editor-form">
-      <label class="field">
-        <span>Card JSON</span>
-        <textarea name="card" rows="10" required placeholder='{"spec":"chara_card_v2","data":{"name":"…"}}'></textarea>
-      </label>
-      <p class="form-error" id="import-error" role="alert" hidden></p>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-ghost" id="import-cancel">Cancel</button>
-        <button type="submit" class="btn btn-primary">Import</button>
-      </div>
-    </form>
+
+    <div id="prompt-body" class="prompt-body">
+      <p class="empty-note">Loading…</p>
+    </div>
   </div>
 </div>
 
-<div class="toast" id="toast" role="status" hidden></div>
+<!-- ── Import modal ──────────────────────────────────────────────────────── -->
+<div id="import-modal" class="modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="import-title">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="import-title">Import a character card</h2>
+      <button class="icon-btn modal-close" aria-label="Close">✕</button>
+    </div>
+    <p class="modal-lede">Paste a Character Card V2 (or v1) JSON document. v1 cards are upgraded on import.</p>
+    <textarea id="import-input" rows="10" placeholder='{"spec":"chara_card_v2","data":{"name":"..."}}'></textarea>
+    <p id="import-error" class="form-error" role="alert"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+      <button type="button" id="import-submit" class="btn btn-primary">Import</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast is-hidden" role="status"></div>
 
 <script src="/static/js/app.js"></script>
 </body>
