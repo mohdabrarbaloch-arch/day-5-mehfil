@@ -255,8 +255,8 @@ async def stream_message(
         # Same rule as the non-streaming path: never score a non-model message.
         fidelity = score(full_text, style) if backend != "none" else None
 
-        # Persist outside the request session's lifetime is unsafe, so we open
-        # a fresh session for the write.
+        # The request session is closed once the response starts streaming, so
+        # the write needs its own session.
         from ..database import SessionLocal
 
         write_db = SessionLocal()

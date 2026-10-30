@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -116,6 +116,39 @@ def _apply_lore(character: Character, entries: list[LoreEntryData]) -> None:
         )
 
 
+def _lore_from_payload(payload: CharacterIn) -> list[LoreEntryData]:
+    return [
+        LoreEntryData(
+            keys=entry.keys,
+            content=entry.content,
+            priority=entry.priority,
+            enabled=entry.enabled,
+            constant=entry.constant,
+            case_sensitive=entry.case_sensitive,
+            name=entry.name,
+        )
+        for entry in payload.lore
+    ]
+
+
+def _card_from_payload(payload: CharacterIn) -> Card:
+    return Card(
+        name=payload.name,
+        description=payload.description,
+        personality=payload.personality,
+        scenario=payload.scenario,
+        first_mes=payload.first_mes,
+        mes_example=payload.mes_example,
+        creator_notes=payload.creator_notes,
+        system_prompt=payload.system_prompt,
+        post_history_instructions=payload.post_history_instructions,
+        alternate_greetings=payload.alternate_greetings,
+        tags=payload.tags,
+        creator=payload.creator,
+        character_version=payload.character_version,
+    )
+
+
 def _serialise(character: Character) -> CharacterOut:
     """Build the response model explicitly.
 
@@ -181,20 +214,18 @@ def list_characters(
         .offset(offset)
     ).all()
 
-    out: list[CharacterSummary] = []
-    for row in rows:
-        out.append(
-            CharacterSummary(
-                id=row.id,
-                name=row.name,
-                description=row.description,
-                tags=_split_csv(row.tags),
-                is_public=row.is_public,
-                created_at=row.created_at,
-                updated_at=row.updated_at,
-            )
+    return [
+        CharacterSummary(
+            id=row.id,
+            name=row.name,
+            description=row.description,
+            tags=_split_csv(row.tags),
+            is_public=row.is_public,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
         )
-    return out
+        for row in rows
+    ]
 
 
 @router.post("", response_model=CharacterOut, status_code=status.HTTP_201_CREATED)
@@ -203,45 +234,18 @@ def create_character(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> CharacterOut:
-    count = len(db.scalars(select(Character.id).where(Character.owner_id == user.id)).all())
-    if count >= settings.max_characters_per_user:
+    count = db.scalar(
+        select(func.count()).select_from(Character).where(Character.owner_id == user.id)
+    )
+    if (count or 0) >= settings.max_characters_per_user:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Character limit reached ({settings.max_characters_per_user}).",
         )
 
     character = Character(owner_id=user.id)
-    card = Card(
-        name=payload.name,
-        description=payload.description,
-        personality=payload.personality,
-        scenario=payload.scenario,
-        first_mes=payload.first_mes,
-        mes_example=payload.mes_example,
-        creator_notes=payload.creator_notes,
-        system_prompt=payload.system_prompt,
-        post_history_instructions=payload.post_history_instructions,
-        alternate_greetings=payload.alternate_greetings,
-        tags=payload.tags,
-        creator=payload.creator,
-        character_version=payload.character_version,
-    )
-    _apply_card(character, card)
-    _apply_lore(
-        character,
-        [
-            LoreEntryData(
-                keys=entry.keys,
-                content=entry.content,
-                priority=entry.priority,
-                enabled=entry.enabled,
-                constant=entry.constant,
-                case_sensitive=entry.case_sensitive,
-                name=entry.name,
-            )
-            for entry in payload.lore
-        ],
-    )
+    _apply_card(character, _card_from_payload(payload))
+    _apply_lore(character, _lore_from_payload(payload))
     character.is_public = payload.is_public
 
     db.add(character)
@@ -263,37 +267,8 @@ def update_character(
     character: Character = Depends(get_owned_character),
     db: Session = Depends(get_db),
 ) -> CharacterOut:
-    card = Card(
-        name=payload.name,
-        description=payload.description,
-        personality=payload.personality,
-        scenario=payload.scenario,
-        first_mes=payload.first_mes,
-        mes_example=payload.mes_example,
-        creator_notes=payload.creator_notes,
-        system_prompt=payload.system_prompt,
-        post_history_instructions=payload.post_history_instructions,
-        alternate_greetings=payload.alternate_greetings,
-        tags=payload.tags,
-        creator=payload.creator,
-        character_version=payload.character_version,
-    )
-    _apply_card(character, card)
-    _apply_lore(
-        character,
-        [
-            LoreEntryData(
-                keys=entry.keys,
-                content=entry.content,
-                priority=entry.priority,
-                enabled=entry.enabled,
-                constant=entry.constant,
-                case_sensitive=entry.case_sensitive,
-                name=entry.name,
-            )
-            for entry in payload.lore
-        ],
-    )
+    _apply_card(character, _card_from_payload(payload))
+    _apply_lore(character, _lore_from_payload(payload))
     character.is_public = payload.is_public
 
     db.commit()
